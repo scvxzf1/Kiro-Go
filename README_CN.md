@@ -200,32 +200,96 @@ host:port:user:pass
 - 凭证 JSON 导入
 - Builder ID / IAM 登录
 
-Kiro CLI 沙盒登录见下一节限制说明。
+Kiro CLI 沙盒登录可以在 Docker 中使用，但需要把 `kiro-cli` 放进容器，见下一节。
 
 
 ## 9. Kiro CLI 沙盒登录说明
 
-当前 Docker 镜像默认不内置 `kiro-cli` 和 `sqlite3`，所以 Docker 部署下的 Kiro CLI 沙盒登录默认不可用。
+管理面板里的 Kiro CLI 沙盒登录是在服务端执行 `kiro-cli login`。
+
+如果你使用 Docker 部署，需要注意：
+
+- 容器内检测的是容器自己的 `PATH`，不是 VPS 宿主机的 `PATH`。
+- 宿主机安装了 `kiro-cli`，不代表容器里能看到。
+- 当前镜像已经内置 `sqlite3`，但不会内置你的 `kiro-cli` 账号工具。
+- 需要把宿主机的 `kiro-cli` 挂载进容器，或自定义镜像把它打进去。
 
 如果点击沙盒登录时看到：
+
+```text
+未检测到 kiro-cli
+```
+
+旧版本也可能显示：
 
 ```text
 未检测到本机 kiro-cli
 ```
 
-或：
+说明容器里没有找到 `kiro-cli`，或者 `KIRO_CLI_PATH` 配错。
+
+如果看到：
 
 ```text
 未检测到 sqlite3
 ```
 
-这是预期现象。
+说明镜像没有重建到新版，执行 `docker compose up -d --build`。
 
-可选方案：
+推荐方案：宿主机安装 `kiro-cli` 后挂载到容器。
 
-1. 在本地电脑运行项目，使用沙盒登录导出账号，再把导出的账号 JSON 导入 VPS。
-2. 在 VPS 宿主机安装 `kiro-cli` 和 `sqlite3`，用源码运行项目。
-3. 自行制作包含 `kiro-cli` 和 `sqlite3` 的 Docker 镜像。
+先在 VPS 宿主机确认 `kiro-cli` 路径：
+
+```bash
+which kiro-cli
+kiro-cli --version
+```
+
+假设输出路径是 `/usr/local/bin/kiro-cli`，保持 `docker-compose.yml` 中：
+
+```yaml
+services:
+  kiro-go:
+    volumes:
+      - ./data:/app/data
+      - /usr/local/bin/kiro-cli:/usr/local/bin/kiro-cli:ro
+    environment:
+      - CONFIG_PATH=/app/data/config.json
+      - KIRO_CLI_PATH=/usr/local/bin/kiro-cli
+```
+
+如果你的 `kiro-cli` 路径不同，把左侧和 `KIRO_CLI_PATH` 一起改成真实路径。
+
+修改后重建并启动：
+
+```bash
+docker compose up -d --build
+```
+
+进入容器验证：
+
+```bash
+docker compose exec kiro-go sqlite3 --version
+docker compose exec kiro-go sh -lc 'echo $KIRO_CLI_PATH'
+docker compose exec kiro-go sh -lc 'ls -l $KIRO_CLI_PATH'
+docker compose exec kiro-go sh -lc '$KIRO_CLI_PATH --version'
+```
+
+四条命令都正常后，再到管理面板点击 Kiro CLI 沙盒登录。
+
+如果 `$KIRO_CLI_PATH --version` 在容器里失败，通常是以下原因：
+
+- 挂载路径写错。
+- `kiro-cli` 不是单文件程序，还依赖同目录资源。
+- `kiro-cli` 依赖宿主机动态库，容器内缺少对应依赖。
+
+这种情况下可以选一种处理方式：
+
+1. 把 `kiro-cli` 的完整安装目录挂载进容器，并把 `KIRO_CLI_PATH` 指到真实可执行文件。
+2. 自定义 Docker 镜像，把 `kiro-cli` 和它需要的依赖一起安装进去。
+3. 不使用 Docker，按第 15 节源码运行，让服务直接使用宿主机的 `kiro-cli`。
+
+沙盒登录只是账号导入方式之一。
 
 普通 API 服务、账号池、代理池和管理面板不受影响。
 

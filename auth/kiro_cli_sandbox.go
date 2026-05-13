@@ -20,6 +20,7 @@ import (
 const (
 	kiroCliLocalSessionPrefix     = "kam-kiro-cli-local-"
 	kiroCliBrowserCaptureScript   = "kiro-browser-capture"
+	kiroCliPathEnv                = "KIRO_CLI_PATH"
 	kiroCliLoginURLFileName       = "login-url.txt"
 	kiroCliLoginLogFileName       = "kiro-cli-login.log"
 	kiroCliLoginPIDFileName       = "kiro-cli-login.pid"
@@ -134,7 +135,7 @@ func CheckKiroCliLocalAvailable() KiroCliLocalAvailability {
 	if executablePath == "" {
 		return KiroCliLocalAvailability{
 			Available: false,
-			Error:     "未检测到本机 kiro-cli，请先安装并确保 kiro-cli 在 PATH 中",
+			Error:     "未检测到 kiro-cli。Docker 部署请把宿主机 kiro-cli 挂载进容器并设置 KIRO_CLI_PATH；源码运行请确保 kiro-cli 在 PATH 中",
 		}
 	}
 
@@ -161,7 +162,7 @@ func CheckKiroCliLocalAvailable() KiroCliLocalAvailability {
 func StartKiroCliLocalLogin() (*KiroCliLocalLoginSession, error) {
 	executablePath := resolveKiroCliExecutable()
 	if executablePath == "" {
-		return nil, fmt.Errorf("未检测到本机 kiro-cli，请先安装并确保 kiro-cli 在 PATH 中")
+		return nil, fmt.Errorf("未检测到 kiro-cli。Docker 部署请把宿主机 kiro-cli 挂载进容器并设置 KIRO_CLI_PATH；源码运行请确保 kiro-cli 在 PATH 中")
 	}
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		return nil, fmt.Errorf("未检测到 sqlite3，无法读取 kiro-cli 登录数据库")
@@ -327,6 +328,9 @@ func resolveKiroCliExecutable() string {
 
 func kiroCliExecutableCandidates() []string {
 	var candidates []string
+	if envPath := strings.TrimSpace(os.Getenv(kiroCliPathEnv)); envPath != "" {
+		candidates = append(candidates, envPath)
+	}
 	if runtime.GOOS == "windows" {
 		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
 			candidates = append(candidates, filepath.Join(localAppData, "Kiro-Cli", "kiro-cli.exe"))

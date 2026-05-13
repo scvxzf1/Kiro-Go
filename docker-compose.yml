@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   kiro-go:
     build: .
@@ -7,6 +5,10 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app/data
+      # Optional: enable Kiro CLI sandbox login inside Docker.
+      # Change the left side to the real host path of your kiro-cli binary.
+      # - /usr/local/bin/kiro-cli:/usr/local/bin/kiro-cli:ro
     environment:
       - CONFIG_PATH=/app/data/config.json
+      - KIRO_CLI_PATH=/usr/local/bin/kiro-cli
     restart: unless-stopped

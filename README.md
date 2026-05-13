@@ -44,7 +44,27 @@ Do not commit `data/config.json`; it contains account tokens and proxy credentia
 
 The API service, admin panel, account pool, and proxy pool work with Docker.
 
-Kiro CLI sandbox login is not enabled in the default Docker image because the image does not include `kiro-cli` and `sqlite3`. Use local/source mode for that flow, or build a custom Docker image that includes those tools.
+Kiro CLI sandbox login can work in Docker, but the container must be able to execute `kiro-cli`.
+
+The image includes `sqlite3`; it does not include `kiro-cli`. Install `kiro-cli` on the host, mount it into the container, and set `KIRO_CLI_PATH`:
+
+```yaml
+volumes:
+  - ./data:/app/data
+  - /usr/local/bin/kiro-cli:/usr/local/bin/kiro-cli:ro
+environment:
+  - CONFIG_PATH=/app/data/config.json
+  - KIRO_CLI_PATH=/usr/local/bin/kiro-cli
+```
+
+Verify inside the container:
+
+```bash
+docker compose exec kiro-go sqlite3 --version
+docker compose exec kiro-go sh -lc '$KIRO_CLI_PATH --version'
+```
+
+If the mounted binary depends on other files or host libraries, mount its full install directory or run the project in source mode on the host.
 
 
 ## License

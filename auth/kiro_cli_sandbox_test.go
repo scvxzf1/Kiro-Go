@@ -11,6 +11,19 @@ func TestExtractFirstHTTPURL(t *testing.T) {
 	}
 }
 
+func TestKiroCliExecutableCandidatesPrioritizeEnvPath(t *testing.T) {
+	want := "/opt/kiro-cli/bin/kiro-cli"
+	t.Setenv(kiroCliPathEnv, want)
+
+	got := kiroCliExecutableCandidates()
+	if len(got) == 0 {
+		t.Fatal("expected at least one kiro-cli executable candidate")
+	}
+	if got[0] != want {
+		t.Fatalf("first candidate = %q, want %q", got[0], want)
+	}
+}
+
 func TestDetermineKiroCliExportProvider(t *testing.T) {
 	var warnings []string
 	got := determineKiroCliExportProvider(KiroCliAccount{AuthMethod: "IdC"}, "https://example.awsapps.com/start", &warnings)
