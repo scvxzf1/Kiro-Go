@@ -1036,9 +1036,12 @@
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <button class="btn btn-primary" onclick="saveProxyConfig()" data-i18n="settings.saveProxy"></button>
                     <button class="btn btn-secondary" onclick="loadProxyStatus()" data-i18n="settings.refreshProxyStatus"></button>
+                    <button class="btn btn-secondary" onclick="testProxyConnectivity()" data-i18n="settings.testProxyConnectivity"></button>
+                    <button class="btn btn-secondary" onclick="testProxyChat()" data-i18n="settings.testProxyChat"></button>
                     <span class="badge badge-info" id="proxyPoolSummary">-</span>
                 </div>
                 <div id="proxyStatusList" style="margin-top:12px;font-size:12px;line-height:1.6;max-height:220px;overflow:auto"></div>
+                <div id="proxyTestResults" style="margin-top:12px;font-size:12px;line-height:1.6"></div>
             </div>
             <div class="card">
                 <div class="card-header"><span class="card-title" data-i18n="settings.statistics"></span></div>
@@ -1177,6 +1180,14 @@
                 'settings.saveProxy': '保存代理设置',
                 'settings.proxySaved': '代理设置已保存',
                 'settings.refreshProxyStatus': '刷新代理状态',
+                'settings.testProxyConnectivity': '测试代理链接状态（随机5条）',
+                'settings.testProxyChat': '测试代理对话（5条）',
+                'settings.proxyTestRunning': '测试中...',
+                'settings.proxyConnectivityTitle': '代理链接测试',
+                'settings.proxyChatTitle': '代理对话测试',
+                'settings.proxyTestOk': '可用',
+                'settings.proxyTestFail': '失败',
+                'settings.proxyTrace': '代理 {0} / 账号 {1}',
                 'settings.proxyPoolEmpty': '直连模式',
                 'settings.proxyPoolStatus': '代理 {0} 条，可用 {1}，冷却 {2}',
                 'settings.proxyCooldown': '冷却 {0}s',
@@ -1407,6 +1418,14 @@
                 'settings.saveProxy': 'Save Proxy Settings',
                 'settings.proxySaved': 'Proxy settings saved',
                 'settings.refreshProxyStatus': 'Refresh Proxy Status',
+                'settings.testProxyConnectivity': 'Test Proxy Links (Random 5)',
+                'settings.testProxyChat': 'Test Proxy Chat (5)',
+                'settings.proxyTestRunning': 'Testing...',
+                'settings.proxyConnectivityTitle': 'Proxy Link Test',
+                'settings.proxyChatTitle': 'Proxy Chat Test',
+                'settings.proxyTestOk': 'OK',
+                'settings.proxyTestFail': 'Failed',
+                'settings.proxyTrace': 'Proxy {0} / Account {1}',
                 'settings.proxyPoolEmpty': 'Direct mode',
                 'settings.proxyPoolStatus': '{0} proxies, {1} available, {2} cooling',
                 'settings.proxyCooldown': 'cooldown {0}s',
@@ -2130,6 +2149,38 @@
             renderProxyStatus(d.proxies || []);
             await loadAccounts();
         }
+        async function testProxyConnectivity() {
+            const box = document.getElementById('proxyTestResults');
+            box.innerHTML = '<div style="color:#64748b">' + t('settings.proxyTestRunning') + '</div>';
+            const res = await fetch('/admin/api/proxy/test-connectivity', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password },
+                body: '{}'
+            });
+            const d = await res.json();
+            if (!res.ok || d.error) {
+                box.innerHTML = '<div style="color:#dc2626">' + escapeHtml(d.error || t('common.failed')) + '</div>';
+                return;
+            }
+            renderProxyTestResults(t('settings.proxyConnectivityTitle'), d.results || []);
+            await loadProxyStatus();
+        }
+        async function testProxyChat() {
+            const box = document.getElementById('proxyTestResults');
+            box.innerHTML = '<div style="color:#64748b">' + t('settings.proxyTestRunning') + '</div>';
+            const res = await fetch('/admin/api/proxy/test-chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password },
+                body: '{}'
+            });
+            const d = await res.json();
+            if (!res.ok || d.error) {
+                box.innerHTML = '<div style="color:#dc2626">' + escapeHtml(d.error || t('common.failed')) + '</div>';
+                return;
+            }
+            renderProxyTestResults(t('settings.proxyChatTitle'), d.results || []);
+            await loadProxyStatus();
+        }
         function renderProxyStatus(proxies) {
             const summary = document.getElementById('proxyPoolSummary');
             const list = document.getElementById('proxyStatusList');
@@ -2149,6 +2200,35 @@
                     '<span style="white-space:nowrap;color:#64748b">' + state + ' / S:' + (p.success || 0) + ' F:' + (p.fail || 0) + ' B:' + (p.boundAccounts || 0) + '</span>' +
                     '</div>';
             }).join('');
+        }
+        function renderProxyTestResults(title, results) {
+            const box = document.getElementById('proxyTestResults');
+            if (!results || results.length === 0) {
+                box.innerHTML = '<div style="color:#64748b">' + escapeHtml(title) + ': -</div>';
+                return;
+            }
+            box.innerHTML = '<div style="font-weight:600;margin-bottom:6px">' + escapeHtml(title) + '</div>' +
+                results.map(r => {
+                    const color = r.ok ? '#16a34a' : '#dc2626';
+                    const state = r.ok ? t('settings.proxyTestOk') : t('settings.proxyTestFail');
+                    const account = r.email || r.accountId || '-';
+                    const trace = t('settings.proxyTrace', r.proxyId || '-', account);
+                    const details = [
+                        r.endpoint ? 'EP:' + r.endpoint : '',
+                        r.statusCode ? 'HTTP:' + r.statusCode : '',
+                        r.latencyMs ? r.latencyMs + 'ms' : '',
+                        r.sample || '',
+                        r.error || ''
+                    ].filter(Boolean).join(' · ');
+                    return '<div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px;margin:6px 0">' +
+                        '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+                        '<span style="color:' + color + ';font-weight:600">' + state + '</span>' +
+                        '<span style="color:#64748b">' + escapeHtml(trace) + '</span>' +
+                        '</div>' +
+                        '<div style="word-break:break-all;color:#334155;margin-top:4px">' + escapeHtml(r.proxy || '') + '</div>' +
+                        '<div style="word-break:break-all;color:#64748b;margin-top:4px">' + details + '</div>' +
+                        '</div>';
+                }).join('');
         }
         function escapeHtml(value) {
             return String(value || '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));

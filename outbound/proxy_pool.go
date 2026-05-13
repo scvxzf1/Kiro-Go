@@ -1,6 +1,8 @@
 package outbound
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"net/http"
@@ -57,6 +59,7 @@ type ClientLease struct {
 }
 
 type ProxyStatus struct {
+	ID                 string `json:"id"`
 	Proxy              string `json:"proxy"`
 	Status             string `json:"status"`
 	CooldownLeft       int    `json:"cooldownLeft"`
@@ -67,6 +70,7 @@ type ProxyStatus struct {
 }
 
 type AccountProxyStatus struct {
+	ID           string `json:"id,omitempty"`
 	Proxy        string `json:"proxy,omitempty"`
 	Status       string `json:"status"`
 	CooldownLeft int    `json:"cooldownLeft,omitempty"`
@@ -88,6 +92,10 @@ func Enabled() bool {
 
 func Acquire(key string, kind ClientKind) *ClientLease {
 	return defaultManager.Acquire(key, kind)
+}
+
+func LeaseForProxy(key, proxyURL string, kind ClientKind) *ClientLease {
+	return defaultManager.LeaseForProxy(key, proxyURL, kind)
 }
 
 func Statuses() []ProxyStatus {
@@ -171,6 +179,11 @@ func SafeProxy(proxyURL string) string {
 	return safe.Scheme + "://***@" + safe.Host
 }
 
+func ProxyID(proxyURL string) string {
+	sum := sha256.Sum256([]byte(proxyURL))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
 func NewManager() *Manager {
 	return &Manager{
 		proxySet: make(map[string]bool),
@@ -226,6 +239,30 @@ func (m *Manager) Acquire(key string, kind ClientKind) *ClientLease {
 	client := m.clientLocked(proxyURL, kind)
 	m.mu.Unlock()
 
+	return &ClientLease{
+		Client:   client,
+		Key:      key,
+		ProxyURL: proxyURL,
+		manager:  m,
+	}
+}
+
+func (m *Manager) LeaseForProxy(key, proxyURL string, kind ClientKind) *ClientLease {
+	if strings.TrimSpace(key) == "" {
+		key = "default"
+	}
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.proxySet[proxyURL] {
+		return nil
+	}
+	client := m.clientLocked(proxyURL, kind)
 	return &ClientLease{
 		Client:   client,
 		Key:      key,
@@ -296,6 +333,7 @@ func (m *Manager) Statuses() []ProxyStatus {
 		st := m.ensureStatsLocked(proxy)
 		status, left := proxyRuntimeStatus(st, now)
 		out = append(out, ProxyStatus{
+			ID:                 ProxyID(proxy),
 			Proxy:              SafeProxy(proxy),
 			Status:             status,
 			CooldownLeft:       left,
@@ -327,6 +365,7 @@ func (m *Manager) AccountStatus(key string) AccountProxyStatus {
 	st := m.ensureStatsLocked(proxyURL)
 	status, left := proxyRuntimeStatus(st, time.Now())
 	return AccountProxyStatus{
+		ID:           ProxyID(proxyURL),
 		Proxy:        SafeProxy(proxyURL),
 		Status:       status,
 		CooldownLeft: left,

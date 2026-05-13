@@ -100,6 +100,27 @@ func validateClaudeRequestShape(req *ClaudeRequest) string {
 	return ""
 }
 
+type proxyTestTarget struct {
+	ProxyRaw  string `json:"-"`
+	ProxyID   string `json:"proxyId"`
+	Proxy     string `json:"proxy"`
+	AccountID string `json:"accountId,omitempty"`
+	Email     string `json:"email,omitempty"`
+}
+
+type proxyTestResult struct {
+	ProxyID    string `json:"proxyId"`
+	Proxy      string `json:"proxy"`
+	AccountID  string `json:"accountId,omitempty"`
+	Email      string `json:"email,omitempty"`
+	OK         bool   `json:"ok"`
+	StatusCode int    `json:"statusCode,omitempty"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	LatencyMS  int64  `json:"latencyMs"`
+	Error      string `json:"error,omitempty"`
+	Sample     string `json:"sample,omitempty"`
+}
+
 func validateClaudeThinkingConfig(thinking *ClaudeThinkingConfig, maxTokens int) string {
 	if thinking == nil {
 		return ""
@@ -1948,6 +1969,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiUpdateProxy(w, r)
 	case path == "/proxy/status" && r.Method == "GET":
 		h.apiGetProxyStatus(w, r)
+	case path == "/proxy/test-connectivity" && r.Method == "POST":
+		h.apiTestProxyConnectivity(w, r)
+	case path == "/proxy/test-chat" && r.Method == "POST":
+		h.apiTestProxyChat(w, r)
 	case path == "/version" && r.Method == "GET":
 		h.apiGetVersion(w, r)
 	case path == "/export" && r.Method == "POST":

@@ -87,6 +87,35 @@ func TestBuildTransportMapsSocks5hToSupportedSocks5(t *testing.T) {
 	}
 }
 
+func TestLeaseForProxyUsesRequestedProxy(t *testing.T) {
+	manager := NewManager()
+	manager.Configure("", []string{"http://proxy-a.local:8080", "http://proxy-b.local:8080"})
+
+	lease := manager.LeaseForProxy("acct-1", "http://proxy-b.local:8080", KindAuth)
+	if lease == nil {
+		t.Fatal("expected lease for configured proxy")
+	}
+	if lease.ProxyURL != "http://proxy-b.local:8080" {
+		t.Fatalf("lease proxy = %q", lease.ProxyURL)
+	}
+	if got := manager.LeaseForProxy("acct-1", "http://missing.local:8080", KindAuth); got != nil {
+		t.Fatalf("expected nil lease for unconfigured proxy, got %+v", got)
+	}
+}
+
+func TestProxyStatusIncludesStableID(t *testing.T) {
+	manager := NewManager()
+	manager.Configure("", []string{"http://user:pass@proxy-a.local:8080"})
+
+	status := manager.Statuses()[0]
+	if status.ID == "" {
+		t.Fatalf("expected proxy id in status: %+v", status)
+	}
+	if status.Proxy != "http://***@proxy-a.local:8080" {
+		t.Fatalf("expected safe proxy, got %q", status.Proxy)
+	}
+}
+
 func TestCooldownIncreasesToCap(t *testing.T) {
 	manager := NewManager()
 	manager.Configure("", []string{"http://proxy-a.local:8080"})

@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -173,6 +174,7 @@ type KiroStreamCallback struct {
 	OnError        func(err error)
 	OnCredits      func(credits float64)
 	OnContextUsage func(percentage float64)
+	OnEndpointTry  func(endpointName, proxyID, proxy string)
 }
 
 // ==================== API 调用 ====================
@@ -208,6 +210,20 @@ func getSortedEndpoints(preferred string) []kiroEndpoint {
 
 // CallKiroAPI 调用 Kiro API（流式），双端点自动 fallback
 func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+	return callKiroAPI(context.Background(), account, payload, callback, "")
+}
+
+func CallKiroAPIWithProxyTimeout(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback, proxyURL string, timeout time.Duration) error {
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	return callKiroAPI(ctx, account, payload, callback, proxyURL)
+}
+
+func callKiroAPI(ctx context.Context, account *config.Account, payload *KiroPayload, callback *KiroStreamCallback, forcedProxyURL string) error {
 	if _, err := json.Marshal(payload); err != nil {
 		return err
 	}
@@ -227,7 +243,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		callback = &wrapped
 	}
 	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" {
-		if profileArn, err := ResolveProfileArn(account); err == nil {
+		if profileArn, err := resolveProfileArnForCall(ctx, account, forcedProxyURL); err == nil {
 			payload.ProfileArn = profileArn
 		} else {
 			accountEmail := "<nil>"
@@ -247,7 +263,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		payload.ConversationState.CurrentMessage.UserInputMessage.Origin = ep.Origin
 
 		reqBody, _ := json.Marshal(payload)
-		req, err := http.NewRequest("POST", ep.URL, bytes.NewReader(reqBody))
+		req, err := http.NewRequestWithContext(ctx, "POST", ep.URL, bytes.NewReader(reqBody))
 		if err != nil {
 			lastErr = err
 			continue
@@ -270,7 +286,19 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 		req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-		lease, client := kiroStreamClient(account)
+		lease, client := kiroStreamClientForCall(account, forcedProxyURL)
+		if callback != nil && callback.OnEndpointTry != nil {
+			proxyID := ""
+			proxy := ""
+			if lease != nil && lease.ProxyURL != "" {
+				proxyID = outbound.ProxyID(lease.ProxyURL)
+				proxy = outbound.SafeProxy(lease.ProxyURL)
+			} else if forcedProxyURL != "" {
+				proxyID = outbound.ProxyID(forcedProxyURL)
+				proxy = outbound.SafeProxy(forcedProxyURL)
+			}
+			callback.OnEndpointTry(ep.Name, proxyID, proxy)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			recordOutboundFailure(lease, 0, err)
@@ -314,6 +342,81 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		return lastErr
 	}
 	return fmt.Errorf("all endpoints failed")
+}
+
+func resolveProfileArnForCall(ctx context.Context, account *config.Account, forcedProxyURL string) (string, error) {
+	if strings.TrimSpace(forcedProxyURL) == "" {
+		return ResolveProfileArn(account)
+	}
+	if account == nil {
+		return "", fmt.Errorf("account is nil")
+	}
+	if profileArn := strings.TrimSpace(account.ProfileArn); profileArn != "" {
+		return profileArn, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/ListAvailableProfiles", kiroRestAPIBase), strings.NewReader(`{"maxResults":10}`))
+	if err != nil {
+		return "", err
+	}
+	setKiroHeaders(req, account)
+	req.Header.Set("Content-Type", "application/json")
+
+	lease, client := kiroRestClientForCall(account, forcedProxyURL)
+	resp, err := client.Do(req)
+	if err != nil {
+		recordOutboundFailure(lease, 0, err)
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		recordOutboundFailure(lease, resp.StatusCode, nil)
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	recordOutboundSuccess(lease)
+
+	var result struct {
+		Profiles []struct {
+			Arn string `json:"arn"`
+		} `json:"profiles"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	for _, profile := range result.Profiles {
+		if profileArn := strings.TrimSpace(profile.Arn); profileArn != "" {
+			if account.ID != "" {
+				if updateErr := config.UpdateAccountProfileArn(account.ID, profileArn); updateErr != nil {
+					logger.Warnf("[ProfileArn] Failed to cache profile ARN for %s: %v", account.Email, updateErr)
+				}
+			}
+			account.ProfileArn = profileArn
+			return profileArn, nil
+		}
+	}
+	return "", fmt.Errorf("empty profile list")
+}
+
+func kiroStreamClientForCall(account *config.Account, forcedProxyURL string) (*outbound.ClientLease, *http.Client) {
+	if strings.TrimSpace(forcedProxyURL) == "" {
+		return kiroStreamClient(account)
+	}
+	if lease := outbound.LeaseForProxy(outboundAccountKey(account), forcedProxyURL, outbound.KindStream); lease != nil {
+		return lease, lease.Client
+	}
+	return nil, outbound.NewClient(forcedProxyURL, outbound.KindStream)
+}
+
+func kiroRestClientForCall(account *config.Account, forcedProxyURL string) (*outbound.ClientLease, *http.Client) {
+	if strings.TrimSpace(forcedProxyURL) == "" {
+		return kiroRestClient(account)
+	}
+	if lease := outbound.LeaseForProxy(outboundAccountKey(account), forcedProxyURL, outbound.KindRest); lease != nil {
+		return lease, lease.Client
+	}
+	return nil, outbound.NewClient(forcedProxyURL, outbound.KindRest)
 }
 
 func kiroStreamClient(account *config.Account) (*outbound.ClientLease, *http.Client) {
