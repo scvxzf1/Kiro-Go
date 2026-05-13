@@ -24,6 +24,19 @@ func TestKiroCliExecutableCandidatesPrioritizeEnvPath(t *testing.T) {
 	}
 }
 
+func TestNewKiroCliLocalLoginCommandUsesDeviceFlow(t *testing.T) {
+	cmd := newKiroCliLocalLoginCommand("/usr/local/bin/kiro-cli")
+	want := []string{"/usr/local/bin/kiro-cli", "login", "--use-device-flow"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("args len = %d, want %d: %v", len(cmd.Args), len(want), cmd.Args)
+	}
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Fatalf("arg[%d] = %q, want %q; args=%v", i, cmd.Args[i], want[i], cmd.Args)
+		}
+	}
+}
+
 func TestDetermineKiroCliExportProvider(t *testing.T) {
 	var warnings []string
 	got := determineKiroCliExportProvider(KiroCliAccount{AuthMethod: "IdC"}, "https://example.awsapps.com/start", &warnings)

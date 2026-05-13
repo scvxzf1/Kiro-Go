@@ -486,7 +486,7 @@ func spawnKiroCliLocalLogin(executablePath string, paths *kiroCliLocalSessionPat
 		return nil, fmt.Errorf("打开 CLI 登录日志失败: %w", err)
 	}
 
-	cmd := exec.Command(executablePath, "login")
+	cmd := newKiroCliLocalLoginCommand(executablePath)
 	cmd.Dir = paths.ProjectDir
 	cmd.Env = append(os.Environ(),
 		"HOME="+paths.HomeDir,
@@ -522,6 +522,10 @@ func spawnKiroCliLocalLogin(executablePath string, paths *kiroCliLocalSessionPat
 		return nil, fmt.Errorf("后台启动 Kiro CLI 登录失败: %w", err)
 	}
 	return cmd, nil
+}
+
+func newKiroCliLocalLoginCommand(executablePath string) *exec.Cmd {
+	return exec.Command(executablePath, "login", "--use-device-flow")
 }
 
 func defaultUser() string {
