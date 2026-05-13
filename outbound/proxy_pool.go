@@ -175,8 +175,13 @@ func SafeProxy(proxyURL string) string {
 		return proxyURL
 	}
 	safe := *u
+	username := safe.User.Username()
+	if username == "" {
+		safe.User = url.User("***")
+		return safe.String()
+	}
 	safe.User = nil
-	return safe.Scheme + "://***@" + safe.Host
+	return safe.Scheme + "://" + url.User(username).String() + ":***@" + safe.Host
 }
 
 func ProxyID(proxyURL string) string {

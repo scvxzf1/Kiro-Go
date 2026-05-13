@@ -37,7 +37,7 @@ func TestProxyDiagnosticResultMasksProxy(t *testing.T) {
 	if result.ProxyID == "" {
 		t.Fatal("expected proxy id")
 	}
-	if result.Proxy != "http://***@proxy.local:8080" {
+	if result.Proxy != "http://user:***@proxy.local:8080" {
 		t.Fatalf("expected masked proxy, got %q", result.Proxy)
 	}
 	if result.AccountID != "acct-1" || result.Email != "user@example.com" {

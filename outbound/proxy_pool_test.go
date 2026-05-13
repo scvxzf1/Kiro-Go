@@ -111,8 +111,17 @@ func TestProxyStatusIncludesStableID(t *testing.T) {
 	if status.ID == "" {
 		t.Fatalf("expected proxy id in status: %+v", status)
 	}
-	if status.Proxy != "http://***@proxy-a.local:8080" {
+	if status.Proxy != "http://user:***@proxy-a.local:8080" {
 		t.Fatalf("expected safe proxy, got %q", status.Proxy)
+	}
+}
+
+func TestSafeProxyKeepsSwiftProxySessionUser(t *testing.T) {
+	raw := "http://demo_user_custom_zone_CA_sid_36375412_time_10:secret_password@proxy.example.net:7878"
+	got := SafeProxy(raw)
+	want := "http://demo_user_custom_zone_CA_sid_36375412_time_10:***@proxy.example.net:7878"
+	if got != want {
+		t.Fatalf("SafeProxy() = %q, want %q", got, want)
 	}
 }
 
