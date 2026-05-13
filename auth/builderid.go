@@ -57,8 +57,7 @@ func StartBuilderIdLogin(region string) (*BuilderIdSession, error) {
 	regReq, _ := http.NewRequest("POST", oidcBase+"/client/register", bytes.NewReader(regBody))
 	regReq.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
-	regResp, err := client.Do(regReq)
+	regResp, err := doAuthRequest(regReq)
 	if err != nil {
 		return nil, fmt.Errorf("register client failed: %v", err)
 	}
@@ -88,7 +87,7 @@ func StartBuilderIdLogin(region string) (*BuilderIdSession, error) {
 	authReq, _ := http.NewRequest("POST", oidcBase+"/device_authorization", bytes.NewReader(authBody))
 	authReq.Header.Set("Content-Type", "application/json")
 
-	authResp, err := client.Do(authReq)
+	authResp, err := doAuthRequest(authReq)
 	if err != nil {
 		return nil, fmt.Errorf("device authorization failed: %v", err)
 	}
@@ -175,8 +174,7 @@ func PollBuilderIdAuth(sessionID string) (accessToken, refreshToken, clientID, c
 	tokenReq, _ := http.NewRequest("POST", oidcBase+"/token", bytes.NewReader(tokenBody))
 	tokenReq.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
-	tokenResp, err := client.Do(tokenReq)
+	tokenResp, err := doAuthRequest(tokenReq)
 	if err != nil {
 		return "", "", "", "", "", 0, "", fmt.Errorf("token request failed: %v", err)
 	}

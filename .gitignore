@@ -1,0 +1,29 @@
+# Local runtime data and secrets
+data/*
+!data/
+!data/.gitkeep
+!data/config.example.json
+
+# Environment overrides
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.pid
+*.tmp
+tmp/
+backup*/
+
+# Local build outputs
+kiro-go
+Kiro-Go
+dist/
+build/
+
+# Editor and OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

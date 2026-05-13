@@ -1,0 +1,18 @@
+{
+  "password": "changeme",
+  "port": 8080,
+  "host": "0.0.0.0",
+  "apiKey": "",
+  "requireApiKey": false,
+  "accounts": [],
+  "thinkingSuffix": "-thinking",
+  "openaiThinkingFormat": "reasoning_content",
+  "claudeThinkingFormat": "thinking",
+  "preferredEndpoint": "auto",
+  "endpointFallback": true,
+  "proxyURL": "",
+  "proxyPool": [
+    "http://username:password@proxy.example.com:8080"
+  ],
+  "logLevel": "info"
+}

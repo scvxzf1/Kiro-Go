@@ -11,17 +11,18 @@ import (
 )
 
 // RefreshToken 刷新 access token
-func RefreshToken(account *config.Account) (string, string, int64, error) {
+// Returns: accessToken, refreshToken, expiresAt, profileArn, error.
+func RefreshToken(account *config.Account) (string, string, int64, string, error) {
 	if account.AuthMethod == "social" {
-		return refreshSocialToken(account.RefreshToken)
+		return refreshSocialToken(account, account.RefreshToken, account.MachineId)
 	}
-	return refreshOIDCToken(account.RefreshToken, account.ClientID, account.ClientSecret, account.Region)
+	return refreshOIDCToken(account, account.RefreshToken, account.ClientID, account.ClientSecret, account.Region)
 }
 
 // refreshOIDCToken IdC/Builder ID token 刷新
-func refreshOIDCToken(refreshToken, clientID, clientSecret, region string) (string, string, int64, error) {
+func refreshOIDCToken(account *config.Account, refreshToken, clientID, clientSecret, region string) (string, string, int64, string, error) {
 	if clientID == "" || clientSecret == "" {
-		return "", "", 0, fmt.Errorf("OIDC refresh requires clientId and clientSecret")
+		return "", "", 0, "", fmt.Errorf("OIDC refresh requires clientId and clientSecret")
 	}
 	if region == "" {
 		region = "us-east-1"
@@ -40,33 +41,34 @@ func refreshOIDCToken(refreshToken, clientID, clientSecret, region string) (stri
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient().Do(req)
+	resp, err := doAccountAuthRequest(account, req)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", "", 0, fmt.Errorf("refresh failed: %d %s", resp.StatusCode, string(respBody))
+		return "", "", 0, "", fmt.Errorf("refresh failed: %d %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
 		AccessToken  string `json:"accessToken"`
 		RefreshToken string `json:"refreshToken"`
 		ExpiresIn    int    `json:"expiresIn"`
+		ProfileArn   string `json:"profileArn"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", 0, err
+		return "", "", 0, "", err
 	}
 
 	expiresAt := time.Now().Unix() + int64(result.ExpiresIn)
-	return result.AccessToken, result.RefreshToken, expiresAt, nil
+	return result.AccessToken, result.RefreshToken, expiresAt, result.ProfileArn, nil
 }
 
 // refreshSocialToken Social (GitHub/Google) token 刷新
-func refreshSocialToken(refreshToken string) (string, string, int64, error) {
+func refreshSocialToken(account *config.Account, refreshToken, machineID string) (string, string, int64, string, error) {
 	url := "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken"
 
 	payload := map[string]string{
@@ -76,28 +78,32 @@ func refreshSocialToken(refreshToken string) (string, string, int64, error) {
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	if machineID != "" {
+		req.Header.Set("User-Agent", fmt.Sprintf("KiroIDE-%s-%s", kiroIDEVersion, machineID))
+	}
 
-	resp, err := httpClient().Do(req)
+	resp, err := doAccountAuthRequest(account, req)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", "", 0, fmt.Errorf("refresh failed: %d %s", resp.StatusCode, string(respBody))
+		return "", "", 0, "", fmt.Errorf("refresh failed: %d %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
 		AccessToken  string `json:"accessToken"`
 		RefreshToken string `json:"refreshToken"`
 		ExpiresIn    int    `json:"expiresIn"`
+		ProfileArn   string `json:"profileArn"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", 0, err
+		return "", "", 0, "", err
 	}
 
 	expiresAt := time.Now().Unix() + int64(result.ExpiresIn)
-	return result.AccessToken, result.RefreshToken, expiresAt, nil
+	return result.AccessToken, result.RefreshToken, expiresAt, result.ProfileArn, nil
 }

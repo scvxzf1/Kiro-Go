@@ -2,9 +2,6 @@ package auth
 
 import (
 	"bytes"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -170,7 +167,7 @@ func registerOIDCClient(oidcBase, startUrl, redirectUri string) (clientID, clien
 	req, _ := http.NewRequest("POST", oidcBase+"/client/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient().Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -207,7 +204,7 @@ func exchangeToken(oidcBase, clientID, clientSecret, code, codeVerifier, redirec
 	req, _ := http.NewRequest("POST", oidcBase+"/token", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient().Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -229,17 +226,6 @@ func exchangeToken(oidcBase, clientID, clientSecret, code, codeVerifier, redirec
 	}
 
 	return result.AccessToken, result.RefreshToken, result.ExpiresIn, nil
-}
-
-func generateCodeVerifier() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-func generateCodeChallenge(verifier string) string {
-	h := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
 func joinScopes() string {

@@ -79,8 +79,7 @@ func registerDeviceClient(oidcBase, startUrl string) (clientID, clientSecret str
 	req, _ := http.NewRequest("POST", oidcBase+"/client/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -110,8 +109,7 @@ func startDeviceAuth(oidcBase, clientID, clientSecret, startUrl string) (deviceC
 	req, _ := http.NewRequest("POST", oidcBase+"/device_authorization", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -139,8 +137,7 @@ func verifyBearerToken(portalBase, bearerToken string) error {
 	req.Header.Set("Authorization", "Bearer "+bearerToken)
 	req.Header.Set("Accept", "application/json")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return err
 	}
@@ -157,8 +154,7 @@ func getDeviceSessionToken(portalBase, bearerToken string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+bearerToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return "", err
 	}
@@ -193,8 +189,7 @@ func acceptUserCode(oidcBase, userCode, deviceSessionToken string) (*deviceConte
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Referer", "https://view.awsapps.com/")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -227,8 +222,7 @@ func approveAuth(oidcBase string, deviceContext *deviceContextInfo, deviceSessio
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Referer", "https://view.awsapps.com/")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return err
 	}
@@ -262,8 +256,7 @@ func pollForToken(oidcBase, clientID, clientSecret, deviceCode string, interval 
 			req, _ := http.NewRequest("POST", oidcBase+"/token", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 
-			client := httpClient()
-			resp, err := client.Do(req)
+			resp, err := doAuthRequest(req)
 			if err != nil {
 				continue
 			}
@@ -311,8 +304,7 @@ func GetUserInfo(accessToken string) (email, userID string, err error) {
 	req.Header.Set("User-Agent", "aws-sdk-js/1.0.18 KiroAPIProxy")
 	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.18 KiroAPIProxy")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := doAuthRequest(req)
 	if err != nil {
 		return "", "", err
 	}

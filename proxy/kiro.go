@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"kiro-go/config"
+	"kiro-go/logger"
+	"kiro-go/outbound"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -28,6 +30,12 @@ type kiroEndpoint struct {
 
 var kiroEndpoints = []kiroEndpoint{
 	{
+		URL:       "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
+		Origin:    "AI_EDITOR",
+		AmzTarget: "",
+		Name:      "Kiro IDE",
+	},
+	{
 		URL:       "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
 		Origin:    "AI_EDITOR",
 		AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
@@ -35,7 +43,7 @@ var kiroEndpoints = []kiroEndpoint{
 	},
 	{
 		URL:       "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
-		Origin:    "CLI",
+		Origin:    "AI_EDITOR",
 		AmzTarget: "AmazonQDeveloperStreamingService.SendMessage",
 		Name:      "AmazonQ",
 	},
@@ -51,23 +59,7 @@ func init() {
 
 // buildKiroTransport 构建带可选代理的 Transport
 func buildKiroTransport(proxyURL string) *http.Transport {
-	t := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
-		ForceAttemptHTTP2:   true,
-	}
-	if proxyURL != "" {
-		if u, err := url.Parse(proxyURL); err == nil {
-			t.Proxy = http.ProxyURL(u)
-			// 代理不支持 HTTP/2 协议升级
-			t.ForceAttemptHTTP2 = false
-		}
-	} else {
-		t.Proxy = http.ProxyFromEnvironment
-	}
-	return t
+	return outbound.BuildTransport(proxyURL, 100, 20)
 }
 
 // InitKiroHttpClient 初始化（或重新初始化）Kiro API 的 HTTP 客户端
@@ -90,15 +82,21 @@ func InitKiroHttpClient(proxyURL string) {
 // KiroPayload Kiro API 请求体
 type KiroPayload struct {
 	ConversationState struct {
-		ChatTriggerType string `json:"chatTriggerType"`
-		ConversationID  string `json:"conversationId"`
-		CurrentMessage  struct {
+		AgentContinuationId string `json:"agentContinuationId,omitempty"`
+		AgentTaskType       string `json:"agentTaskType,omitempty"`
+		ChatTriggerType     string `json:"chatTriggerType"`
+		ConversationID      string `json:"conversationId"`
+		CurrentMessage      struct {
 			UserInputMessage KiroUserInputMessage `json:"userInputMessage"`
 		} `json:"currentMessage"`
 		History []KiroHistoryMessage `json:"history,omitempty"`
 	} `json:"conversationState"`
 	ProfileArn      string           `json:"profileArn,omitempty"`
 	InferenceConfig *InferenceConfig `json:"inferenceConfig,omitempty"`
+
+	// ToolNameMap maps sanitized tool names (sent to Kiro) back to the
+	// original names supplied by the client. It is not serialized to Kiro.
+	ToolNameMap map[string]string `json:"-"`
 }
 
 type KiroUserInputMessage struct {
@@ -181,20 +179,52 @@ type KiroStreamCallback struct {
 
 // getSortedEndpoints 根据首选端点配置排序端点列表
 func getSortedEndpoints(preferred string) []kiroEndpoint {
-	if preferred == "amazonq" {
-		return []kiroEndpoint{kiroEndpoints[1], kiroEndpoints[0]}
+	fallback := config.GetEndpointFallback()
+
+	var primary int
+	switch preferred {
+	case "kiro":
+		primary = 0
+	case "codewhisperer":
+		primary = 1
+	case "amazonq":
+		primary = 2
+	default:
+		return []kiroEndpoint{kiroEndpoints[0], kiroEndpoints[1], kiroEndpoints[2]}
 	}
-	if preferred == "codewhisperer" {
-		return []kiroEndpoint{kiroEndpoints[0], kiroEndpoints[1]}
+
+	if !fallback {
+		return []kiroEndpoint{kiroEndpoints[primary]}
 	}
-	// "auto" 或空值：默认顺序
-	return []kiroEndpoint{kiroEndpoints[0], kiroEndpoints[1]}
+
+	result := []kiroEndpoint{kiroEndpoints[primary]}
+	for i, ep := range kiroEndpoints {
+		if i != primary {
+			result = append(result, ep)
+		}
+	}
+	return result
 }
 
 // CallKiroAPI 调用 Kiro API（流式），双端点自动 fallback
 func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
 	if _, err := json.Marshal(payload); err != nil {
 		return err
+	}
+	if payloadJSON, err := json.Marshal(payload); err == nil {
+		logger.Debugf("[KiroAPI] Request payload: %s", string(payloadJSON))
+	}
+	if payload != nil && callback != nil && callback.OnToolUse != nil && len(payload.ToolNameMap) > 0 {
+		originalOnToolUse := callback.OnToolUse
+		nameMap := payload.ToolNameMap
+		wrapped := *callback
+		wrapped.OnToolUse = func(tu KiroToolUse) {
+			if original, ok := nameMap[tu.Name]; ok {
+				tu.Name = original
+			}
+			originalOnToolUse(tu)
+		}
+		callback = &wrapped
 	}
 	if payload != nil && strings.TrimSpace(payload.ProfileArn) == "" {
 		if profileArn, err := ResolveProfileArn(account); err == nil {
@@ -204,7 +234,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 			if account != nil {
 				accountEmail = account.Email
 			}
-			fmt.Printf("[ProfileArn] Failed to resolve profile ARN for %s: %v\n", accountEmail, err)
+			logger.Warnf("[ProfileArn] Failed to resolve profile ARN for %s: %v", accountEmail, err)
 		}
 	}
 
@@ -231,23 +261,28 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("X-Amz-Target", ep.AmzTarget)
+		if ep.AmzTarget != "" {
+			req.Header.Set("X-Amz-Target", ep.AmzTarget)
+		}
 		applyKiroBaseHeaders(req, account, headerValues)
 		req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 		req.Header.Set("x-amzn-codewhisperer-optout", "true")
 		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 		req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-		resp, err := kiroHttpStore.Load().Do(req)
+		lease, client := kiroStreamClient(account)
+		resp, err := client.Do(req)
 		if err != nil {
+			recordOutboundFailure(lease, 0, err)
 			lastErr = err
-			fmt.Printf("[KiroAPI] Endpoint %s failed: %v\n", ep.Name, err)
+			logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
 			continue
 		}
 
 		if resp.StatusCode == 429 {
 			resp.Body.Close()
-			fmt.Printf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...\n", ep.Name)
+			recordOutboundFailure(lease, resp.StatusCode, nil)
+			logger.Warnf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...", ep.Name)
 			lastErr = fmt.Errorf("quota exhausted on %s", ep.Name)
 			continue
 		}
@@ -255,17 +290,23 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		if resp.StatusCode != 200 {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			recordOutboundFailure(lease, resp.StatusCode, nil)
 			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
 			// 认证错误不继续尝试
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {
 				return lastErr
 			}
-			fmt.Printf("[KiroAPI] Endpoint %s error: %v\n", ep.Name, lastErr)
+			logger.Warnf("[KiroAPI] Endpoint %s error: %v", ep.Name, lastErr)
 			continue
 		}
 
 		err = parseEventStream(resp.Body, callback)
 		resp.Body.Close()
+		if err != nil {
+			recordOutboundFailure(lease, 0, err)
+		} else {
+			recordOutboundSuccess(lease)
+		}
 		return err
 	}
 
@@ -273,6 +314,41 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		return lastErr
 	}
 	return fmt.Errorf("all endpoints failed")
+}
+
+func kiroStreamClient(account *config.Account) (*outbound.ClientLease, *http.Client) {
+	if !outbound.Enabled() {
+		return nil, kiroHttpStore.Load()
+	}
+	lease := outbound.Acquire(outboundAccountKey(account), outbound.KindStream)
+	return lease, lease.Client
+}
+
+func kiroRestClient(account *config.Account) (*outbound.ClientLease, *http.Client) {
+	if !outbound.Enabled() {
+		return nil, kiroRestHttpStore.Load()
+	}
+	lease := outbound.Acquire(outboundAccountKey(account), outbound.KindRest)
+	return lease, lease.Client
+}
+
+func outboundAccountKey(account *config.Account) string {
+	if account != nil && account.ID != "" {
+		return account.ID
+	}
+	return "kiro"
+}
+
+func recordOutboundFailure(lease *outbound.ClientLease, statusCode int, err error) {
+	if lease != nil && outbound.ShouldCountFailure(statusCode, err) {
+		lease.RecordFailure()
+	}
+}
+
+func recordOutboundSuccess(lease *outbound.ClientLease) {
+	if lease != nil {
+		lease.RecordSuccess()
+	}
 }
 
 // ==================== Event Stream 解析 ====================

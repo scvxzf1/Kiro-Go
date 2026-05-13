@@ -1002,11 +1002,20 @@
                     <label data-i18n="settings.preferredEndpoint"></label>
                     <select id="preferredEndpoint">
                         <option value="auto" data-i18n="settings.endpointAuto"></option>
+                        <option value="kiro">Kiro IDE</option>
                         <option value="codewhisperer">CodeWhisperer</option>
                         <option value="amazonq">AmazonQ</option>
                     </select>
                     <small style="color:#64748b;font-size:12px;margin-top:4px;display:block"
                         data-i18n="settings.endpointHint"></small>
+                </div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                        <input type="checkbox" id="endpointFallback" checked>
+                        <span data-i18n="settings.endpointFallback"></span>
+                    </label>
+                    <small style="color:#64748b;font-size:12px;margin-top:4px;display:block"
+                        data-i18n="settings.endpointFallbackHint"></small>
                 </div>
                 <button class="btn btn-primary" onclick="saveEndpointConfig()"
                     data-i18n="settings.saveEndpoint"></button>
@@ -1020,30 +1029,16 @@
             <div class="card">
                 <div class="card-header"><span class="card-title" data-i18n="settings.proxySettings"></span></div>
                 <div class="form-group">
-                    <label data-i18n="settings.proxyType"></label>
-                    <select id="proxyType" onchange="onProxyTypeChange()">
-                        <option value="none" data-i18n="settings.proxyNone"></option>
-                        <option value="socks5">SOCKS5</option>
-                        <option value="http">HTTP</option>
-                    </select>
+                    <label data-i18n="settings.proxyPool"></label>
+                    <textarea id="proxyPoolText" rows="5" spellcheck="false" placeholder="http://127.0.0.1:7890&#10;socks5://user:pass@proxy.example:1080&#10;host:port:user:pass"></textarea>
+                    <small data-i18n="settings.proxyPoolHint"></small>
                 </div>
-                <div id="proxyFields" style="display:none">
-                    <div class="form-group">
-                        <label data-i18n="settings.proxyHost"></label>
-                        <div style="display:flex;gap:8px;align-items:stretch">
-                            <input type="text" id="proxyHost" style="flex:1" placeholder="127.0.0.1">
-                            <input type="number" id="proxyPort" style="width:90px" placeholder="1080" min="1" max="65535">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="settings.proxyAuth"></label>
-                        <div style="display:flex;gap:8px">
-                            <input type="text" id="proxyUsername" style="flex:1" data-i18n-placeholder="settings.proxyUsername" autocomplete="off">
-                            <input type="password" id="proxyPassword" style="flex:1" data-i18n-placeholder="settings.proxyPassword" autocomplete="new-password">
-                        </div>
-                    </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <button class="btn btn-primary" onclick="saveProxyConfig()" data-i18n="settings.saveProxy"></button>
+                    <button class="btn btn-secondary" onclick="loadProxyStatus()" data-i18n="settings.refreshProxyStatus"></button>
+                    <span class="badge badge-info" id="proxyPoolSummary">-</span>
                 </div>
-                <button class="btn btn-primary" onclick="saveProxyConfig()" data-i18n="settings.saveProxy"></button>
+                <div id="proxyStatusList" style="margin-top:12px;font-size:12px;line-height:1.6;max-height:220px;overflow:auto"></div>
             </div>
             <div class="card">
                 <div class="card-header"><span class="card-title" data-i18n="settings.statistics"></span></div>
@@ -1163,6 +1158,8 @@
                 'settings.preferredEndpoint': '首选端点',
                 'settings.endpointAuto': '自动选择',
                 'settings.endpointHint': '选择首选端点，自动选择模式下会根据可用性自动选择端点',
+                'settings.endpointFallback': '端点不可用时自动切换',
+                'settings.endpointFallbackHint': '关闭后，仅使用选定的端点，不会自动切换到其他端点',
                 'settings.saveEndpoint': '保存端点设置',
                 'settings.endpointSaved': '端点设置已保存',
                 'settings.adminPassword': '管理密码',
@@ -1175,15 +1172,17 @@
                 'settings.resetStats': '重置统计',
                 'settings.confirmReset': '确定重置统计？',
                 'settings.proxySettings': '出站代理设置',
-                'settings.proxyType': '代理类型',
-                'settings.proxyNone': '直连（不使用代理）',
-                'settings.proxyHost': '地址 / 端口',
-                'settings.proxyAuth': '认证（可选）',
-                'settings.proxyUsername': '用户名',
-                'settings.proxyPassword': '密码',
-                'settings.proxyHostRequired': '请填写代理地址和端口',
+                'settings.proxyPool': '代理池',
+                'settings.proxyPoolHint': '每行或逗号分隔一条代理。支持 http、https、socks5、socks5h；无协议默认 http；兼容 host:port:user:pass。',
                 'settings.saveProxy': '保存代理设置',
                 'settings.proxySaved': '代理设置已保存',
+                'settings.refreshProxyStatus': '刷新代理状态',
+                'settings.proxyPoolEmpty': '直连模式',
+                'settings.proxyPoolStatus': '代理 {0} 条，可用 {1}，冷却 {2}',
+                'settings.proxyCooldown': '冷却 {0}s',
+                'accounts.proxy': '代理',
+                'accounts.proxyUnbound': '未绑定',
+                'accounts.proxyDirect': '直连',
                 'api.endpoints': 'API 端点',
                 'api.modelList': '模型列表',
                 'api.stats': '统计数据',
@@ -1220,6 +1219,8 @@
                 'detail.saveFailed': '保存失败',
                 'detail.generateFailed': '生成失败',
                 'modal.addAccount': '添加账号',
+                'modal.kiroLoginTitle': 'Kiro CLI 沙盒登录',
+                'modal.kiroLoginDesc': '复刻 Kiro Account Manager 的 kiro-cli 临时 HOME/XDG 沙盒登录流程',
                 'modal.builderIdTitle': 'AWS Builder ID',
                 'modal.builderIdDesc': '通过 AWS Builder ID 授权登录添加个人账号',
                 'modal.iamTitle': 'IAM Identity Center (企业 SSO) 登录',
@@ -1236,6 +1237,14 @@
                 'builderid.open': '打开',
                 'builderid.waiting': '等待授权中...',
                 'builderid.success': '登录成功',
+                'kiroLogin.generated': '登录链接已捕获，请复制到浏览器打开并完成授权',
+                'kiroLogin.loginUrl': '登录链接',
+                'kiroLogin.machineId': '沙盒 machineId',
+                'kiroLogin.logPath': '登录日志',
+                'kiroLogin.noUrl': '暂未捕获到登录链接，请查看日志或稍后重新开始',
+                'kiroLogin.export': '导出并添加账号',
+                'kiroLogin.imported': '成功添加 {0} 个账号',
+                'kiroLogin.warning': '警告',
                 'iam.startUrl': 'Start URL',
                 'iam.loginUrl': '登录链接',
                 'iam.completeLogin': '请在浏览器中完成登录，然后粘贴回调 URL',
@@ -1379,6 +1388,8 @@
                 'settings.preferredEndpoint': 'Preferred Endpoint',
                 'settings.endpointAuto': 'Auto',
                 'settings.endpointHint': 'Select preferred endpoint. In auto-select mode, the endpoint is automatically selected based on availability.',
+                'settings.endpointFallback': 'Fallback to other endpoints',
+                'settings.endpointFallbackHint': 'When disabled, only the selected endpoint is used without automatic fallback',
                 'settings.saveEndpoint': 'Save Endpoint Settings',
                 'settings.endpointSaved': 'Endpoint settings saved',
                 'settings.adminPassword': 'Admin Password',
@@ -1391,15 +1402,17 @@
                 'settings.resetStats': 'Reset Statistics',
                 'settings.confirmReset': 'Confirm reset statistics?',
                 'settings.proxySettings': 'Outbound Proxy Settings',
-                'settings.proxyType': 'Proxy Type',
-                'settings.proxyNone': 'Direct (no proxy)',
-                'settings.proxyHost': 'Host / Port',
-                'settings.proxyAuth': 'Authentication (optional)',
-                'settings.proxyUsername': 'Username',
-                'settings.proxyPassword': 'Password',
-                'settings.proxyHostRequired': 'Please enter proxy host and port',
+                'settings.proxyPool': 'Proxy Pool',
+                'settings.proxyPoolHint': 'One proxy per line or comma separated. Supports http, https, socks5, socks5h; missing scheme defaults to http; host:port:user:pass is accepted.',
                 'settings.saveProxy': 'Save Proxy Settings',
                 'settings.proxySaved': 'Proxy settings saved',
+                'settings.refreshProxyStatus': 'Refresh Proxy Status',
+                'settings.proxyPoolEmpty': 'Direct mode',
+                'settings.proxyPoolStatus': '{0} proxies, {1} available, {2} cooling',
+                'settings.proxyCooldown': 'cooldown {0}s',
+                'accounts.proxy': 'Proxy',
+                'accounts.proxyUnbound': 'Unbound',
+                'accounts.proxyDirect': 'Direct',
                 'api.endpoints': 'API Endpoints',
                 'api.modelList': 'Model List',
                 'api.stats': 'Statistics',
@@ -1432,6 +1445,8 @@
                 'detail.saveFailed': 'Save failed',
                 'detail.generateFailed': 'Generate failed',
                 'modal.addAccount': 'Add Account',
+                'modal.kiroLoginTitle': 'Kiro CLI Sandbox Login',
+                'modal.kiroLoginDesc': 'Replicate Kiro Account Manager local HOME/XDG sandbox login with kiro-cli',
                 'modal.builderIdTitle': 'AWS Builder ID',
                 'modal.builderIdDesc': 'Add personal account via AWS Builder ID authorization',
                 'modal.iamTitle': 'IAM Identity Center (Enterprise SSO)',
@@ -1448,6 +1463,14 @@
                 'builderid.open': 'Open',
                 'builderid.waiting': 'Waiting for authorization...',
                 'builderid.success': 'Login successful',
+                'kiroLogin.generated': 'Login URL captured. Copy it and open it in your browser.',
+                'kiroLogin.loginUrl': 'Login URL',
+                'kiroLogin.machineId': 'Sandbox machineId',
+                'kiroLogin.logPath': 'Login Log',
+                'kiroLogin.noUrl': 'No login URL captured yet. Check the log or restart later.',
+                'kiroLogin.export': 'Export and Add Account',
+                'kiroLogin.imported': 'Successfully added {0} account(s)',
+                'kiroLogin.warning': 'Warning',
                 'iam.startUrl': 'Start URL',
                 'iam.loginUrl': 'Login URL',
                 'iam.completeLogin': 'Complete login in browser, then paste callback URL',
@@ -1797,6 +1820,7 @@
                 const isSelected = selectedAccounts.has(a.id);
                 const weightVal = a.weight || 0;
                 const weightBadge = weightVal >= 2 ? '<span class="badge" style="background:#f59e0b;color:#fff">W:' + weightVal + '</span>' : '';
+                const proxyBadge = formatAccountProxyBadge(a.proxy);
                 return '<div class="account-card" style="' + (isSelected ? 'border-color:#7c3aed;background:#faf5ff' : '') + '">' +
                     '<div class="account-header">' +
                     '<div class="account-info" style="display:flex;align-items:center;gap:8px">' +
@@ -1808,6 +1832,7 @@
                     getTrialBadge(a) +
                     weightBadge +
                     '<span class="badge badge-info">' + formatAuthMethod(a.provider || a.authMethod) + '</span>' +
+                    proxyBadge +
                     getStatusBadge(a) +
                     '</div>' +
                     '</div>' +
@@ -1841,6 +1866,16 @@
             if (subType.includes('PRO_PLUS') || subType.includes('PROPLUS')) return '<span class="badge badge-proplus">PRO+</span>';
             if (subType.includes('PRO')) return '<span class="badge badge-pro">PRO</span>';
             return '<span class="badge badge-free">FREE</span>';
+        }
+
+        function formatAccountProxyBadge(proxy) {
+            if (!proxy || proxy.status === 'direct') return '<span class="badge">' + t('accounts.proxyDirect') + '</span>';
+            if (proxy.status === 'unbound') return '<span class="badge">' + t('accounts.proxyUnbound') + '</span>';
+            const color = proxy.status === 'cooldown' ? '#dc2626' : '#2563eb';
+            const label = proxy.status === 'cooldown'
+                ? t('settings.proxyCooldown', proxy.cooldownLeft || 0)
+                : (proxy.proxy || t('accounts.proxy'));
+            return '<span class="badge" style="background:' + color + ';color:#fff" title="' + escapeHtml(proxy.proxy || '') + '">' + escapeHtml(label) + '</span>';
         }
 
         function getTrialBadge(account) {
@@ -2060,11 +2095,12 @@
             const res = await fetch('/admin/api/endpoint', { headers: { 'X-Admin-Password': password } });
             const d = await res.json();
             document.getElementById('preferredEndpoint').value = d.preferredEndpoint || 'auto';
+            document.getElementById('endpointFallback').checked = d.endpointFallback !== false;
         }
         async function saveEndpointConfig() {
             const res = await fetch('/admin/api/endpoint', {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password },
-                body: JSON.stringify({ preferredEndpoint: document.getElementById('preferredEndpoint').value })
+                body: JSON.stringify({ preferredEndpoint: document.getElementById('preferredEndpoint').value, endpointFallback: document.getElementById('endpointFallback').checked })
             });
             const d = await res.json();
             if (d.success) { alert(t('settings.endpointSaved')); } else { alert(t('common.saveFailed') + ': ' + d.error); }
@@ -2072,48 +2108,50 @@
         async function loadProxyConfig() {
             const res = await fetch('/admin/api/proxy', { headers: { 'X-Admin-Password': password } });
             const d = await res.json();
-            const proxyURL = d.proxyURL || '';
-            if (!proxyURL) {
-                document.getElementById('proxyType').value = 'none';
-                document.getElementById('proxyFields').style.display = 'none';
-                return;
-            }
-            try {
-                const u = new URL(proxyURL);
-                const scheme = u.protocol.replace(':', '');
-                document.getElementById('proxyType').value = scheme.startsWith('socks5') ? 'socks5' : 'http';
-                document.getElementById('proxyHost').value = u.hostname;
-                document.getElementById('proxyPort').value = u.port;
-                document.getElementById('proxyUsername').value = decodeURIComponent(u.username);
-                document.getElementById('proxyPassword').value = decodeURIComponent(u.password);
-                document.getElementById('proxyFields').style.display = '';
-            } catch(e) {
-                document.getElementById('proxyType').value = 'none';
-                document.getElementById('proxyFields').style.display = 'none';
-            }
-        }
-        function onProxyTypeChange() {
-            const type = document.getElementById('proxyType').value;
-            document.getElementById('proxyFields').style.display = type === 'none' ? 'none' : '';
+            document.getElementById('proxyPoolText').value = d.proxyPoolText || '';
+            renderProxyStatus(d.status || []);
         }
         async function saveProxyConfig() {
-            const type = document.getElementById('proxyType').value;
-            let proxyURL = '';
-            if (type !== 'none') {
-                const host = document.getElementById('proxyHost').value.trim();
-                const port = document.getElementById('proxyPort').value.trim();
-                if (!host || !port) { alert(t('settings.proxyHostRequired')); return; }
-                const user = document.getElementById('proxyUsername').value.trim();
-                const pass = document.getElementById('proxyPassword').value.trim();
-                const auth = user ? (pass ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : `${encodeURIComponent(user)}@`) : '';
-                proxyURL = `${type}://${auth}${host}:${port}`;
-            }
+            const proxyPoolText = document.getElementById('proxyPoolText').value.trim();
             const res = await fetch('/admin/api/proxy', {
                 method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password },
-                body: JSON.stringify({ proxyURL })
+                body: JSON.stringify({ proxyPoolText })
             });
             const d = await res.json();
-            if (d.success) { alert(t('settings.proxySaved')); } else { alert(t('common.saveFailed') + ': ' + d.error); }
+            if (d.success) {
+                alert(t('settings.proxySaved'));
+                await loadProxyConfig();
+                await loadAccounts();
+            } else { alert(t('common.saveFailed') + ': ' + d.error); }
+        }
+        async function loadProxyStatus() {
+            const res = await fetch('/admin/api/proxy/status', { headers: { 'X-Admin-Password': password } });
+            const d = await res.json();
+            renderProxyStatus(d.proxies || []);
+            await loadAccounts();
+        }
+        function renderProxyStatus(proxies) {
+            const summary = document.getElementById('proxyPoolSummary');
+            const list = document.getElementById('proxyStatusList');
+            if (!proxies || proxies.length === 0) {
+                summary.textContent = t('settings.proxyPoolEmpty');
+                list.innerHTML = '';
+                return;
+            }
+            const cooling = proxies.filter(p => p.status === 'cooldown').length;
+            const ok = proxies.length - cooling;
+            summary.textContent = t('settings.proxyPoolStatus', proxies.length, ok, cooling);
+            list.innerHTML = proxies.map(p => {
+                const color = p.status === 'cooldown' ? '#dc2626' : '#16a34a';
+                const state = p.status === 'cooldown' ? t('settings.proxyCooldown', p.cooldownLeft || 0) : 'OK';
+                return '<div style="display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;padding:5px 0">' +
+                    '<span style="word-break:break-all;color:' + color + '">● ' + escapeHtml(p.proxy || '') + '</span>' +
+                    '<span style="white-space:nowrap;color:#64748b">' + state + ' / S:' + (p.success || 0) + ' F:' + (p.fail || 0) + ' B:' + (p.boundAccounts || 0) + '</span>' +
+                    '</div>';
+            }).join('');
+        }
+        function escapeHtml(value) {
+            return String(value || '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
         }
         function generateApiKey() {
             const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -2237,6 +2275,7 @@
                 title.textContent = t('modal.addAccount');
                 body.innerHTML =
                     '<div style="display:flex;flex-direction:column;gap:12px">' +
+                    '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'kiro-login\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.kiroLoginTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.kiroLoginDesc') + '</div></div>' +
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'builderid\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.builderIdTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.builderIdDesc') + '</div></div>' +
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'iam\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.iamTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.iamDesc') + '</div></div>' +
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'sso\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.ssoTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.ssoDesc') + '</div></div>' +
@@ -2244,6 +2283,17 @@
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'credentials\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.credentialsTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.credentialsDesc') + '</div></div>' +
                     '</div>' +
                     '<div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">' + t('common.cancel') + '</button></div>';
+            } else if (type === 'kiro-login') {
+                title.textContent = t('modal.kiroLoginTitle');
+                body.innerHTML =
+                    '<p style="font-size:13px;color:#64748b;margin-bottom:16px">' + t('modal.kiroLoginDesc') + '</p>' +
+                    '<div id="kiroLoginStep2" class="hidden">' +
+                    '<p id="kiroLoginStatus" style="color:#64748b;margin:12px 0;font-size:13px;text-align:center"></p>' +
+                    '<div class="form-group"><label>' + t('kiroLogin.loginUrl') + '</label><div class="endpoint" style="margin-bottom:0"><span id="kiroLoginUrl" style="font-size:11px"></span></div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-sm btn-secondary" style="flex:1" onclick="copyKiroLoginUrl()">' + t('common.copy') + '</button></div></div>' +
+                    '<div class="detail-grid" style="margin-top:12px"><div class="detail-item"><div class="detail-label">' + t('kiroLogin.machineId') + '</div><div class="detail-value" id="kiroLoginMachineId">-</div></div><div class="detail-item"><div class="detail-label">' + t('kiroLogin.logPath') + '</div><div class="detail-value" id="kiroLoginLogPath" style="font-size:11px;word-break:break-all">-</div></div></div>' +
+                    '<div id="kiroLoginWarnings" style="font-size:12px;color:#b45309;line-height:1.5;margin-top:10px"></div>' +
+                    '</div>' +
+                    '<div class="modal-footer"><button class="btn btn-secondary" onclick="cancelKiroCliSandboxLogin()">' + t('common.back') + '</button><button class="btn btn-primary" id="kiroLoginBtn" onclick="startKiroWebLogin()">' + t('builderid.startLogin') + '</button></div>';
             } else if (type === 'builderid') {
                 title.textContent = t('modal.builderIdTitle');
                 body.innerHTML =
@@ -2296,6 +2346,70 @@
             iamSession = '';
             if (builderIdPollTimer) { clearTimeout(builderIdPollTimer); builderIdPollTimer = null; }
             builderIdSession = '';
+            kiroLoginSession = '';
+            kiroLoginAuthorizeUrl = '';
+            kiroLoginMachineId = '';
+        }
+        let kiroLoginSession = '';
+        let kiroLoginAuthorizeUrl = '';
+        let kiroLoginMachineId = '';
+        async function startKiroWebLogin() {
+            if (kiroLoginSession) {
+                await exportKiroCliSandboxLogin();
+                return;
+            }
+            const status = document.getElementById('kiroLoginStatus');
+            const res = await fetch('/admin/api/auth/kiro-cli/local/start', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password }, body: '{}' });
+            const d = await res.json();
+            if (!d.sessionId) {
+                alert(t('common.failed') + ': ' + (d.error || 'unknown'));
+                return;
+            }
+            kiroLoginSession = d.sessionId;
+            kiroLoginAuthorizeUrl = d.loginUrl || '';
+            kiroLoginMachineId = d.machineId || '';
+            const urlEl = document.getElementById('kiroLoginUrl');
+            const step2 = document.getElementById('kiroLoginStep2');
+            const btn = document.getElementById('kiroLoginBtn');
+            const machineEl = document.getElementById('kiroLoginMachineId');
+            const logEl = document.getElementById('kiroLoginLogPath');
+            const warningsEl = document.getElementById('kiroLoginWarnings');
+            if (urlEl) urlEl.textContent = kiroLoginAuthorizeUrl || t('kiroLogin.noUrl');
+            if (machineEl) machineEl.textContent = kiroLoginMachineId || '-';
+            if (logEl) logEl.textContent = d.loginLogPath || '-';
+            if (warningsEl) warningsEl.innerHTML = (d.warnings || []).map(w => '<div>' + t('kiroLogin.warning') + ': ' + w + '</div>').join('');
+            if (step2) step2.classList.remove('hidden');
+            if (btn) btn.textContent = t('kiroLogin.export');
+            if (status) {
+                status.textContent = kiroLoginAuthorizeUrl ? t('kiroLogin.generated') : t('kiroLogin.noUrl');
+            }
+        }
+        async function exportKiroCliSandboxLogin() {
+            if (!kiroLoginSession || !kiroLoginMachineId) return;
+            const res = await fetch('/admin/api/auth/kiro-cli/local/export', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password }, body: JSON.stringify({ sessionId: kiroLoginSession, machineId: kiroLoginMachineId }) });
+            const d = await res.json();
+            if (d.success) {
+                const count = d.accounts?.length || 0;
+                closeModal(); loadAccounts(); loadStats();
+                alert(t('kiroLogin.imported', count));
+                (d.accounts || []).forEach(a => autoRefreshNewAccount(a.id));
+            } else {
+                alert(t('common.failed') + ': ' + (d.error || 'unknown'));
+            }
+        }
+        async function cancelKiroCliSandboxLogin() {
+            if (kiroLoginSession) {
+                await fetch('/admin/api/auth/kiro-cli/local/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password }, body: JSON.stringify({ sessionId: kiroLoginSession }) }).catch(() => {});
+            }
+            kiroLoginSession = '';
+            kiroLoginAuthorizeUrl = '';
+            kiroLoginMachineId = '';
+            showModal('add');
+        }
+        function copyKiroLoginUrl() {
+            if (!kiroLoginAuthorizeUrl) return;
+            navigator.clipboard.writeText(kiroLoginAuthorizeUrl);
+            alert(t('common.copied'));
         }
         function loadLocalFile(input, targetId) {
             const file = input.files[0];
@@ -2451,7 +2565,12 @@
                 } else alert(t('common.failed') + ': ' + d.error);
             }
         }
-        setInterval(() => { if (!document.getElementById('mainPage').classList.contains('hidden')) loadStats(); }, 10000);
+        setInterval(() => {
+            if (!document.getElementById('mainPage').classList.contains('hidden')) {
+                loadStats();
+                loadProxyStatus();
+            }
+        }, 10000);
 
         // ==================== 版本检查 ====================
         let currentVersion = '';

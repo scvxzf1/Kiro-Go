@@ -3,9 +3,12 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"kiro-go/auth"
 	"kiro-go/config"
+	"kiro-go/logger"
+	"kiro-go/outbound"
 	"kiro-go/pool"
 	"net/http"
 	"strings"
@@ -207,7 +210,7 @@ func validateOpenAIRequestShape(req *OpenAIRequest) string {
 
 func NewHandler() *Handler {
 	// 启动时应用代理配置
-	applyProxyConfig(config.GetProxyURL())
+	applyProxyConfig(config.GetProxyURL(), config.GetProxyPool())
 
 	totalReq, successReq, failedReq, totalTokens, totalCredits := config.GetStats()
 	h := &Handler{
@@ -261,9 +264,9 @@ func (h *Handler) refreshAllAccounts() {
 
 		// 检查 token 是否需要刷新
 		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-300 {
-			newAccessToken, newRefreshToken, newExpiresAt, err := auth.RefreshToken(account)
+			newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
 			if err != nil {
-				fmt.Printf("[BackgroundRefresh] Token refresh failed for %s: %v\n", account.Email, err)
+				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
 				continue
 			}
 			account.AccessToken = newAccessToken
@@ -271,6 +274,10 @@ func (h *Handler) refreshAllAccounts() {
 				account.RefreshToken = newRefreshToken
 			}
 			account.ExpiresAt = newExpiresAt
+			if profileArn != "" {
+				account.ProfileArn = profileArn
+				config.UpdateAccountProfileArn(account.ID, profileArn)
+			}
 			config.UpdateAccountToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
 			h.pool.UpdateToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
 		}
@@ -278,12 +285,12 @@ func (h *Handler) refreshAllAccounts() {
 		// 刷新账户信息
 		info, err := RefreshAccountInfo(account)
 		if err != nil {
-			fmt.Printf("[BackgroundRefresh] Failed to refresh %s: %v\n", account.Email, err)
+			logger.Warnf("[BackgroundRefresh] Failed to refresh %s: %v", account.Email, err)
 			continue
 		}
 
 		config.UpdateAccountInfo(account.ID, *info)
-		fmt.Printf("[BackgroundRefresh] Refreshed %s: %s %.1f/%.1f\n", account.Email, info.SubscriptionType, info.UsageCurrent, info.UsageLimit)
+		logger.Infof("[BackgroundRefresh] Refreshed %s: %s %.1f/%.1f", account.Email, info.SubscriptionType, info.UsageCurrent, info.UsageLimit)
 	}
 	h.pool.Reload()
 }
@@ -316,6 +323,7 @@ func (h *Handler) validateApiKey(r *http.Request) bool {
 // ServeHTTP 路由分发
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	logger.Debugf("[HTTP] %s %s from %s", r.Method, path, r.RemoteAddr)
 
 	// CORS - 完整的头部支持
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -535,13 +543,13 @@ func (h *Handler) refreshModelsCache() {
 	for i := range accounts {
 		account := &accounts[i]
 		if err := h.ensureValidToken(account); err != nil {
-			fmt.Printf("[ModelsCache] Skip %s token refresh failed: %v\n", account.Email, err)
+			logger.Warnf("[ModelsCache] Skip %s token refresh failed: %v", account.Email, err)
 			continue
 		}
 
 		models, err := ListAvailableModels(account)
 		if err != nil {
-			fmt.Printf("[ModelsCache] Failed to refresh for %s: %v\n", account.Email, err)
+			logger.Warnf("[ModelsCache] Failed to refresh for %s: %v", account.Email, err)
 			continue
 		}
 		aggregated = mergeUniqueModels(aggregated, models)
@@ -552,7 +560,7 @@ func (h *Handler) refreshModelsCache() {
 		h.cachedModels = aggregated
 		h.modelsCacheTime = time.Now().Unix()
 		h.modelsCacheMu.Unlock()
-		fmt.Printf("[ModelsCache] Cached %d models\n", len(aggregated))
+		logger.Infof("[ModelsCache] Cached %d models", len(aggregated))
 	}
 }
 
@@ -1819,7 +1827,7 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 		return nil
 	}
 
-	accessToken, refreshToken, expiresAt, err := auth.RefreshToken(account)
+	accessToken, refreshToken, expiresAt, profileArn, err := auth.RefreshToken(account)
 	if err != nil {
 		return err
 	}
@@ -1831,6 +1839,10 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 		account.RefreshToken = refreshToken
 	}
 	account.ExpiresAt = expiresAt
+	if profileArn != "" {
+		account.ProfileArn = profileArn
+		config.UpdateAccountProfileArn(account.ID, profileArn)
+	}
 
 	// 持久化
 	config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt)
@@ -1841,6 +1853,12 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 // ==================== 管理 API ====================
 
 func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/admin/api")
+	if path == "/auth/kiro/callback" && r.Method == "GET" {
+		h.apiKiroLoginCallback(w, r)
+		return
+	}
+
 	// 验证密码
 	password := r.Header.Get("X-Admin-Password")
 	if password == "" {
@@ -1856,7 +1874,6 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := strings.TrimPrefix(r.URL.Path, "/admin/api")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
 	switch {
@@ -1891,6 +1908,20 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiImportSsoToken(w, r)
 	case path == "/auth/credentials" && r.Method == "POST":
 		h.apiImportCredentials(w, r)
+	case path == "/auth/kiro/start" && r.Method == "POST":
+		h.apiStartKiroLogin(w, r)
+	case path == "/auth/kiro/complete" && r.Method == "POST":
+		h.apiCompleteKiroLogin(w, r)
+	case path == "/auth/kiro/status" && r.Method == "GET":
+		h.apiGetKiroLoginStatus(w, r)
+	case path == "/auth/kiro-cli/local/check" && r.Method == "GET":
+		h.apiCheckKiroCliLocal(w, r)
+	case path == "/auth/kiro-cli/local/start" && r.Method == "POST":
+		h.apiStartKiroCliLocalLogin(w, r)
+	case path == "/auth/kiro-cli/local/export" && r.Method == "POST":
+		h.apiExportKiroCliLocalLogin(w, r)
+	case path == "/auth/kiro-cli/local/cleanup" && r.Method == "POST":
+		h.apiCleanupKiroCliLocalLogin(w, r)
 	case path == "/status" && r.Method == "GET":
 		h.apiGetStatus(w, r)
 	case path == "/settings" && r.Method == "GET":
@@ -1915,6 +1946,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetProxy(w, r)
 	case path == "/proxy" && r.Method == "POST":
 		h.apiUpdateProxy(w, r)
+	case path == "/proxy/status" && r.Method == "GET":
+		h.apiGetProxyStatus(w, r)
 	case path == "/version" && r.Method == "GET":
 		h.apiGetVersion(w, r)
 	case path == "/export" && r.Method == "POST":
@@ -1975,6 +2008,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"totalTokens":       stats.TotalTokens,
 			"totalCredits":      stats.TotalCredits,
 			"lastUsed":          stats.LastUsed,
+			"proxy":             outbound.AccountStatus(a.ID),
 		}
 	}
 	json.NewEncoder(w).Encode(result)
@@ -2119,7 +2153,7 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 			}
 			// 刷新 token
 			if account.RefreshToken != "" {
-				if newAccess, newRefresh, newExpires, err := auth.RefreshToken(account); err == nil {
+				if newAccess, newRefresh, newExpires, profileArn, err := auth.RefreshToken(account); err == nil {
 					account.AccessToken = newAccess
 					if newRefresh != "" {
 						account.RefreshToken = newRefresh
@@ -2127,6 +2161,10 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 					account.ExpiresAt = newExpires
 					config.UpdateAccountToken(id, newAccess, newRefresh, newExpires)
 					h.pool.UpdateToken(id, newAccess, newRefresh, newExpires)
+					if profileArn != "" {
+						account.ProfileArn = profileArn
+						config.UpdateAccountProfileArn(id, profileArn)
+					}
 				}
 			}
 			// 刷新账户信息
@@ -2464,7 +2502,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		AuthMethod:   req.AuthMethod,
 		Region:       req.Region,
 	}
-	newAccessToken, newRefreshToken, newExpiresAt, err := auth.RefreshToken(tempAccount)
+	newAccessToken, newRefreshToken, newExpiresAt, newProfileArn, err := auth.RefreshToken(tempAccount)
 	if err != nil {
 		// 刷新失败，如果有传入的 accessToken 则尝试使用
 		if req.AccessToken != "" {
@@ -2500,6 +2538,7 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    expiresAt,
 		Enabled:      true,
 		MachineId:    config.GenerateMachineId(),
+		ProfileArn:   newProfileArn,
 	}
 
 	if err := config.AddAccount(account); err != nil {
@@ -2516,6 +2555,408 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 			"email": account.Email,
 		},
 	})
+}
+
+func (h *Handler) apiStartKiroLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+		Region   string `json:"region"`
+		StartURL string `json:"startUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	session, authorizeURL, err := auth.StartKiroLogin(req.Provider, req.Region, req.StartURL, "", config.GenerateMachineId())
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"sessionId":    session.ID,
+		"authorizeUrl": authorizeURL,
+		"redirectUri":  session.RedirectURI,
+		"expiresIn":    int(time.Until(session.ExpiresAt).Seconds()),
+		"provider":     session.Provider,
+		"authMethod":   session.AuthMethod,
+	})
+}
+
+func (h *Handler) apiCompleteKiroLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID   string `json:"sessionId"`
+		CallbackURL string `json:"callbackUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	token, err := auth.CompleteKiroLoginCallback(req.SessionID, req.CallbackURL)
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	account, err := h.createAccountFromKiroLogin(token)
+	if err != nil {
+		auth.MarkKiroLoginFailed(token.SessionID, err.Error())
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	auth.MarkKiroLoginCompleted(token.SessionID, auth.KiroLoginAccount{
+		ID:     account.ID,
+		Email:  account.Email,
+		UserID: account.UserId,
+	})
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"account": map[string]interface{}{
+			"id":     account.ID,
+			"email":  account.Email,
+			"userId": account.UserId,
+		},
+	})
+}
+
+func (h *Handler) apiGetKiroLoginStatus(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("sessionId")
+	if sessionID == "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "sessionId is required"})
+		return
+	}
+
+	session := auth.GetKiroLoginSession(sessionID)
+	if session == nil {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": "session not found or expired"})
+		return
+	}
+	if time.Now().After(session.ExpiresAt) && session.Status != "completed" && session.Status != "failed" {
+		auth.MarkKiroLoginFailed(sessionID, "authorization expired")
+		session = auth.GetKiroLoginSession(sessionID)
+	}
+
+	response := map[string]interface{}{
+		"success":   session.Status != "failed",
+		"completed": session.Status == "completed",
+		"status":    session.Status,
+		"provider":  session.Provider,
+	}
+	if session.Error != "" {
+		response["error"] = session.Error
+	}
+	if session.Account != nil {
+		response["account"] = session.Account
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *Handler) apiKiroLoginCallback(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	token, err := auth.CompleteKiroLogin(
+		q.Get("state"),
+		q.Get("code"),
+		q.Get("error"),
+		q.Get("error_description"),
+	)
+	if err != nil {
+		writeKiroLoginCallbackPage(w, false, err.Error(), "")
+		return
+	}
+
+	account, err := h.createAccountFromKiroLogin(token)
+	if err != nil {
+		auth.MarkKiroLoginFailed(token.SessionID, err.Error())
+		writeKiroLoginCallbackPage(w, false, err.Error(), "")
+		return
+	}
+
+	auth.MarkKiroLoginCompleted(token.SessionID, auth.KiroLoginAccount{
+		ID:     account.ID,
+		Email:  account.Email,
+		UserID: account.UserId,
+	})
+	writeKiroLoginCallbackPage(w, true, "登录成功，可以关闭此窗口", account.Email)
+}
+
+func (h *Handler) apiCheckKiroCliLocal(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(auth.CheckKiroCliLocalAvailable())
+}
+
+func (h *Handler) apiStartKiroCliLocalLogin(w http.ResponseWriter, r *http.Request) {
+	session, err := auth.StartKiroCliLocalLogin()
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(session)
+}
+
+func (h *Handler) apiExportKiroCliLocalLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+		MachineID string `json:"machineId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	result, err := auth.ExportKiroCliLocalLogin(req.SessionID, req.MachineID)
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	var imported []map[string]interface{}
+	var errors []string
+	for _, cliAccount := range result.Accounts {
+		account, err := h.createAccountFromKiroCliExport(cliAccount)
+		if err != nil {
+			errors = append(errors, err.Error())
+			continue
+		}
+		imported = append(imported, map[string]interface{}{
+			"id":     account.ID,
+			"email":  account.Email,
+			"userId": account.UserId,
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":         len(imported) > 0,
+		"accounts":        imported,
+		"errors":          errors,
+		"accountJson":     result.AccountJSON,
+		"rawSnapshotJson": result.RawSnapshotJSON,
+		"machineId":       result.MachineID,
+		"dbPath":          result.DBPath,
+		"warnings":        result.Warnings,
+	})
+}
+
+func (h *Handler) apiCleanupKiroCliLocalLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	cleaned, err := auth.CleanupKiroCliLocalSession(req.SessionID)
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "cleaned": cleaned})
+}
+
+func (h *Handler) createAccountFromKiroLogin(token *auth.KiroLoginTokenResult) (*config.Account, error) {
+	if token == nil {
+		return nil, fmt.Errorf("empty token result")
+	}
+	if token.AccessToken == "" || token.RefreshToken == "" {
+		return nil, fmt.Errorf("token response missing accessToken or refreshToken")
+	}
+
+	email, userID, _ := auth.GetUserInfo(token.AccessToken)
+	displayEmail := email
+	if displayEmail == "" {
+		displayEmail = userID
+	}
+	if displayEmail == "" && token.Provider == "BuilderId" {
+		displayEmail = "builderid_unknown"
+	}
+	if displayEmail == "" {
+		displayEmail = strings.ToLower(token.Provider) + "_" + accountIDHint(token.RefreshToken)
+	}
+
+	account := config.Account{
+		ID:           auth.GenerateAccountID(),
+		Email:        displayEmail,
+		UserId:       userID,
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		ClientID:     token.ClientID,
+		ClientSecret: token.ClientSecret,
+		AuthMethod:   token.AuthMethod,
+		Provider:     token.Provider,
+		Region:       token.Region,
+		StartUrl:     token.StartURL,
+		ExpiresAt:    time.Now().Unix() + int64(token.ExpiresIn),
+		Enabled:      true,
+		MachineId:    token.MachineID,
+		ProfileArn:   token.ProfileArn,
+	}
+	if account.Region == "" {
+		account.Region = "us-east-1"
+	}
+	if account.MachineId == "" {
+		account.MachineId = config.GenerateMachineId()
+	}
+
+	if err := config.AddAccount(account); err != nil {
+		return nil, err
+	}
+
+	h.pool.Reload()
+
+	info, err := RefreshAccountInfo(&account)
+	if err == nil {
+		_ = config.UpdateAccountInfo(account.ID, *info)
+	}
+
+	return &account, nil
+}
+
+func (h *Handler) createAccountFromKiroCliExport(cliAccount auth.KiroCliExportableAccount) (*config.Account, error) {
+	if cliAccount.RefreshToken == "" {
+		return nil, fmt.Errorf("kiro-cli 导出缺少 refreshToken")
+	}
+
+	authMethod := "social"
+	if strings.EqualFold(cliAccount.AuthMethod, "idc") || strings.EqualFold(cliAccount.AuthMethod, "IdC") {
+		authMethod = "idc"
+	}
+
+	accessToken := cliAccount.AccessToken
+	refreshToken := cliAccount.RefreshToken
+	expiresAt := time.Now().Unix() + 300
+	tempAccount := &config.Account{
+		AccessToken:  cliAccount.AccessToken,
+		RefreshToken: cliAccount.RefreshToken,
+		ClientID:     cliAccount.ClientID,
+		ClientSecret: cliAccount.ClientSecret,
+		AuthMethod:   authMethod,
+		Provider:     cliAccount.Provider,
+		Region:       cliAccount.Region,
+		MachineId:    cliAccount.MachineID,
+		ProfileArn:   cliAccount.ProfileArn,
+	}
+	if refreshedAccess, refreshedRefresh, refreshedExpires, refreshedProfileArn, err := auth.RefreshToken(tempAccount); err == nil {
+		accessToken = refreshedAccess
+		if refreshedRefresh != "" {
+			refreshToken = refreshedRefresh
+		}
+		expiresAt = refreshedExpires
+		if refreshedProfileArn != "" {
+			tempAccount.ProfileArn = refreshedProfileArn
+		}
+	}
+
+	email, userID, _ := auth.GetUserInfo(accessToken)
+	displayEmail := email
+	if displayEmail == "" {
+		displayEmail = userID
+	}
+	if displayEmail == "" {
+		displayEmail = strings.ToLower(cliAccount.Provider) + "_" + accountIDHint(refreshToken)
+	}
+
+	region := cliAccount.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+	machineID := cliAccount.MachineID
+	if machineID == "" {
+		machineID = config.GenerateMachineId()
+	}
+
+	account := config.Account{
+		ID:           auth.GenerateAccountID(),
+		Email:        displayEmail,
+		UserId:       userID,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ClientID:     cliAccount.ClientID,
+		ClientSecret: cliAccount.ClientSecret,
+		AuthMethod:   authMethod,
+		Provider:     cliAccount.Provider,
+		Region:       region,
+		StartUrl:     cliAccount.StartURL,
+		ExpiresAt:    expiresAt,
+		Enabled:      true,
+		MachineId:    machineID,
+		ProfileArn:   tempAccount.ProfileArn,
+	}
+
+	if err := config.AddAccount(account); err != nil {
+		return nil, err
+	}
+	h.pool.Reload()
+	if info, err := RefreshAccountInfo(&account); err == nil {
+		_ = config.UpdateAccountInfo(account.ID, *info)
+	}
+	return &account, nil
+}
+
+func accountIDHint(refreshToken string) string {
+	if len(refreshToken) >= 8 {
+		return refreshToken[:8]
+	}
+	if refreshToken != "" {
+		return refreshToken
+	}
+	return auth.GenerateAccountID()[:8]
+}
+
+func buildKiroLoginRedirectURI(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+
+	host := r.Host
+	if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	if host == "" {
+		host = fmt.Sprintf("%s:%d", config.GetHost(), config.GetPort())
+	}
+
+	return fmt.Sprintf("%s://%s/admin/api/auth/kiro/callback", scheme, host)
+}
+
+func writeKiroLoginCallbackPage(w http.ResponseWriter, success bool, message, account string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	title := "授权失败"
+	if success {
+		title = "授权成功"
+	}
+	if account != "" {
+		message = message + "：" + account
+	}
+	fmt.Fprintf(w, `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>%s</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#f8fafc;color:#0f172a}
+    main{max-width:520px;padding:32px;text-align:center}
+    h1{font-size:24px;margin:0 0 12px}
+    p{color:#475569;line-height:1.6}
+  </style>
+</head>
+<body><main><h1>%s</h1><p>%s</p></main></body>
+</html>`, html.EscapeString(title), html.EscapeString(title), html.EscapeString(message))
 }
 
 func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
@@ -2612,7 +3053,7 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		if account.RefreshToken == "" {
 			return nil
 		}
-		newAccessToken, newRefreshToken, newExpiresAt, err := auth.RefreshToken(account)
+		newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
 		if err != nil {
 			return err
 		}
@@ -2623,6 +3064,10 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		account.ExpiresAt = newExpiresAt
 		config.UpdateAccountToken(id, newAccessToken, newRefreshToken, newExpiresAt)
 		h.pool.UpdateToken(id, newAccessToken, newRefreshToken, newExpiresAt)
+		if profileArn != "" {
+			account.ProfileArn = profileArn
+			config.UpdateAccountProfileArn(id, profileArn)
+		}
 		return nil
 	}
 
@@ -2847,8 +3292,9 @@ func (h *Handler) apiUpdateThinkingConfig(w http.ResponseWriter, r *http.Request
 
 // apiGetEndpointConfig 获取端点配置
 func (h *Handler) apiGetEndpointConfig(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"preferredEndpoint": config.GetPreferredEndpoint(),
+		"endpointFallback":  config.GetEndpointFallback(),
 	})
 }
 
@@ -2856,6 +3302,7 @@ func (h *Handler) apiGetEndpointConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) apiUpdateEndpointConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PreferredEndpoint string `json:"preferredEndpoint"`
+		EndpointFallback  *bool  `json:"endpointFallback"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -2863,10 +3310,10 @@ func (h *Handler) apiUpdateEndpointConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	valid := map[string]bool{"auto": true, "codewhisperer": true, "amazonq": true}
+	valid := map[string]bool{"auto": true, "kiro": true, "codewhisperer": true, "amazonq": true}
 	if !valid[req.PreferredEndpoint] {
 		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid endpoint, must be: auto, codewhisperer, or amazonq"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid endpoint, must be: auto, kiro, codewhisperer, or amazonq"})
 		return
 	}
 
@@ -2875,27 +3322,47 @@ func (h *Handler) apiUpdateEndpointConfig(w http.ResponseWriter, r *http.Request
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	if req.EndpointFallback != nil {
+		if err := config.UpdateEndpointFallback(*req.EndpointFallback); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
 // applyProxyConfig 将代理配置应用到所有出站 HTTP 客户端（Kiro API + auth 模块）
-func applyProxyConfig(proxyURL string) {
+func applyProxyConfig(proxyURL string, proxyPool []string) {
+	outbound.Configure(proxyURL, proxyPool)
 	InitKiroHttpClient(proxyURL)
 	auth.InitHttpClient(proxyURL)
 }
 
 // apiGetProxy 获取当前代理配置
 func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
-		"proxyURL": config.GetProxyURL(),
+	proxyURL := config.GetProxyURL()
+	proxyPool := config.GetProxyPool()
+	if len(proxyPool) == 0 && proxyURL != "" {
+		if normalized, err := outbound.NormalizeProxyLine(proxyURL); err == nil && normalized != "" {
+			proxyPool = []string{normalized}
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"proxyURL":      proxyURL,
+		"proxyPool":     proxyPool,
+		"proxyPoolText": outbound.ProxyPoolText(proxyPool),
+		"status":        outbound.Statuses(),
 	})
 }
 
 // apiUpdateProxy 更新代理配置并立即生效
 func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProxyURL string `json:"proxyURL"`
+		ProxyURL      string   `json:"proxyURL"`
+		ProxyPool     []string `json:"proxyPool"`
+		ProxyPoolText string   `json:"proxyPoolText"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -2903,28 +3370,58 @@ func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 验证代理 URL 格式（非空时）
-	if req.ProxyURL != "" {
-		if !strings.HasPrefix(req.ProxyURL, "http://") &&
-			!strings.HasPrefix(req.ProxyURL, "https://") &&
-			!strings.HasPrefix(req.ProxyURL, "socks5://") &&
-			!strings.HasPrefix(req.ProxyURL, "socks5h://") {
-			w.WriteHeader(400)
-			json.NewEncoder(w).Encode(map[string]string{"error": "proxyURL must start with http://, https://, socks5://, or socks5h://"})
-			return
+	var proxyPool []string
+	var err error
+	if strings.TrimSpace(req.ProxyPoolText) != "" {
+		proxyPool, err = outbound.NormalizeProxyPoolText(req.ProxyPoolText)
+	} else if len(req.ProxyPool) > 0 {
+		proxyPool = make([]string, 0, len(req.ProxyPool))
+		seen := make(map[string]bool)
+		for _, raw := range req.ProxyPool {
+			normalized, normalizeErr := outbound.NormalizeProxyLine(raw)
+			if normalizeErr != nil {
+				err = normalizeErr
+				break
+			}
+			if normalized != "" && !seen[normalized] {
+				seen[normalized] = true
+				proxyPool = append(proxyPool, normalized)
+			}
+		}
+	} else if strings.TrimSpace(req.ProxyURL) != "" {
+		var normalized string
+		normalized, err = outbound.NormalizeProxyLine(req.ProxyURL)
+		if normalized != "" {
+			proxyPool = []string{normalized}
 		}
 	}
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 
-	if err := config.UpdateProxySettings(req.ProxyURL); err != nil {
+	proxyURL := ""
+	if len(proxyPool) > 0 {
+		proxyURL = proxyPool[0]
+	}
+	if err := config.UpdateProxyPoolSettings(proxyURL, proxyPool); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	// 立即应用新的代理配置
-	applyProxyConfig(req.ProxyURL)
+	applyProxyConfig(proxyURL, proxyPool)
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// apiGetProxyStatus 获取代理池运行状态
+func (h *Handler) apiGetProxyStatus(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"proxies": outbound.Statuses(),
+	})
 }
 
 // apiGetVersion 获取版本信息

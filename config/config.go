@@ -106,14 +106,26 @@ type Config struct {
 	OpenAIThinkingFormat string `json:"openaiThinkingFormat,omitempty"` // OpenAI output format: "reasoning_content", "thinking", or "think"
 	ClaudeThinkingFormat string `json:"claudeThinkingFormat,omitempty"` // Claude output format: "reasoning_content", "thinking", or "think"
 
-	// Endpoint configuration: "auto", "codewhisperer", or "amazonq"
+	// Endpoint configuration: "auto", "kiro", "codewhisperer", or "amazonq"
 	PreferredEndpoint string `json:"preferredEndpoint,omitempty"`
+
+	// EndpointFallback controls whether to try other endpoints when the preferred one fails.
+	// Defaults to true. Set to false to only use the preferred endpoint.
+	EndpointFallback *bool `json:"endpointFallback,omitempty"`
 
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
 	//         "http://host:port",  "http://user:pass@host:port"
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
+	// ProxyPool stores normalized outbound proxies. When set it takes
+	// precedence over ProxyURL; ProxyURL remains for backward compatibility.
+	ProxyPool []string `json:"proxyPool,omitempty"`
+
+	// LogLevel controls verbosity of application logs.
+	// Accepted values: "debug", "info", "warn", "error". Defaults to "info".
+	// Can be overridden by the LOG_LEVEL environment variable.
+	LogLevel string `json:"logLevel,omitempty"`
 
 	// Global statistics (persisted across restarts)
 	TotalRequests   int     `json:"totalRequests,omitempty"`   // Total API requests received
@@ -144,7 +156,7 @@ type AccountInfo struct {
 }
 
 // Version current version
-const Version = "1.0.6"
+const Version = "1.0.7"
 
 var (
 	cfg     *Config
@@ -464,6 +476,24 @@ func UpdatePreferredEndpoint(endpoint string) error {
 	return Save()
 }
 
+// GetEndpointFallback returns whether endpoint fallback is enabled. Defaults to true.
+func GetEndpointFallback() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg.EndpointFallback == nil {
+		return true
+	}
+	return *cfg.EndpointFallback
+}
+
+// UpdateEndpointFallback sets the endpoint fallback switch and persists the change.
+func UpdateEndpointFallback(enabled bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.EndpointFallback = &enabled
+	return Save()
+}
+
 // GetProxyURL 获取出站代理地址
 func GetProxyURL() string {
 	cfgLock.RLock()
@@ -471,11 +501,47 @@ func GetProxyURL() string {
 	return cfg.ProxyURL
 }
 
+// GetProxyPool 获取出站代理池
+func GetProxyPool() []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	proxies := make([]string, len(cfg.ProxyPool))
+	copy(proxies, cfg.ProxyPool)
+	return proxies
+}
+
 // UpdateProxySettings 更新出站代理配置
 func UpdateProxySettings(proxyURL string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.ProxyURL = proxyURL
+	return Save()
+}
+
+// UpdateProxyPoolSettings 更新出站代理池配置
+func UpdateProxyPoolSettings(proxyURL string, proxyPool []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.ProxyURL = proxyURL
+	cfg.ProxyPool = append([]string(nil), proxyPool...)
+	return Save()
+}
+
+// GetLogLevel returns the configured log level (debug/info/warn/error). Defaults to "info".
+func GetLogLevel() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.LogLevel == "" {
+		return "info"
+	}
+	return cfg.LogLevel
+}
+
+// UpdateLogLevel updates the log level setting and persists the change.
+func UpdateLogLevel(level string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.LogLevel = level
 	return Save()
 }
 
